@@ -1,6 +1,6 @@
 (*清除定义*)
 Clear["Global`*"];
-VilidFileName[file_String]:=StringReplace[file,{"\\"->"＼","/"->"／",":"->"：","*"->"*","?"->"？","\""->""","<"->"《",">"->"》","|"->"丨"}];
+VilidFileName[file_String]:=StringReplace[file,{"\\"->"＼","/"->"／",":"->"：","*"->"*","?"->"？","\""->"“","<"->"《",">"->"》","|"->"丨"}];
 ImportJSONFromURL[url_]:=ImportJSONFromURL[url,{}];
 ImportJSONFromURL[url_,header_]:=ImportString[FromCharacterCode[URLRead[HTTPRequest[url,<|"Headers"->header|>]]["BodyBytes"],"Unicode"],"JSON"];
 ImportStringFromURL[url_]:=ImportStringFromURL[url,{}];
