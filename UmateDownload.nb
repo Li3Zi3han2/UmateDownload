@@ -1,276 +1,1027 @@
-(*清除定义*)
-Clear["Global`*"];
-VilidFileName[file_String]:=StringReplace[file,{"\\"->"＼","/"->"／",":"->"：","*"->"*","?"->"？","\""->"“","<"->"《",">"->"》","|"->"丨"}];
-ImportJSONFromURL[url_]:=ImportJSONFromURL[url,{}];
-ImportJSONFromURL[url_,header_]:=ImportString[FromCharacterCode[URLRead[HTTPRequest[url,<|"Headers"->header|>]]["BodyBytes"],"Unicode"],"JSON"];
-ImportStringFromURL[url_]:=ImportStringFromURL[url,{}];
-ImportStringFromURL[url_,header_]:=Import[HTTPRequest[url,<|"Headers"->header|>],"Text"];
-DownloadFileFromURL[url_,name_]:=DownloadFileFromURL[url,name,{}];
-DownloadFileFromURL[url_,name_,header_]:=URLDownload[HTTPRequest[url,<|"Headers"->header|>],name];
-FromJSONToDataset[json_]:=Dataset[ReplaceRepeated[json,List[kv__Rule]:>Association[kv]]];
+(* Content-type: application/vnd.wolfram.mathematica *)
 
-(*下载某一作者最新的数个帖子*)
-(*下载从第n1个到第n2个*)
-UmateDownload[url_String/;StringMatchQ[url,"https://umate.me/personInfo/"~~__],dir_String,"圈子",{n1_Integer,n2_Integer}/;1<=n1<=n2]:=Module[
-{pause,header,user,userAPI,userJSON,userDataset,postNumber,imageNumber,videoNumber,postPerPage,circleSlug,pageAPI,pageJSON,pageDataset,postJSON,postDataset,postSlug,date,name,imageURL,videoURL,m3u8URL,tsURL,videoFile,mylist,result},
-(*设置暂停时长*)
-pause=1;
-(*恢复代理设置原始值*)
-$DefaultProxyRules["UseProxy"]=Automatic;
-(*创建输出目录*)
-CreateDirectory[dir];
-(*设置工作目录*)
-SetDirectory[dir];
-(*请求头，其中Authorization必需*)
-header="-H \"Authorization: Bearer eyJ▮▮▮▮▮▮Ll8\"";
-header=StringCases[header,"\""~~Shortest[key__]~~": "~~Shortest[value__]~~"\"":>(key->value)];
-(*用户信息*)
-user=StringExtract[url,"/"->-1];
-userAPI=URLBuild[{"https://api.umate.me","api","circle","user_circle_list"},{"username"->user}];
-userJSON=ImportJSONFromURL[userAPI,header];
-userDataset=FromJSONToDataset[userJSON];
-(*数量信息，目前只考虑第1个圈子*)
-{postNumber,imageNumber,videoNumber}=ToExpression[Normal[Values[userDataset["data","data",1,{"post_num","image_num","video_num"}]]]];
-postPerPage=6;
-(*页面信息*)
-circleSlug=userDataset["data","data",1,"circle_slug"];
-(*如果文件存在，则导入文件*)
-If[FileNames["page"~~Repeated[DigitCharacter,{8}]~~".json"]!={},
-pageJSON=Import[FileNames["page"~~Repeated[DigitCharacter,{8}]~~".json"][[-1]]];
-pageDataset=FromJSONToDataset[pageJSON]
-];
-(*如果文件不存在或帖子总数不相等，则更新文件*)
-If[FileNames["page"~~Repeated[DigitCharacter,{8}]~~".json"]=={}||pageDataset[1,"data","total"]=!=postNumber,
-pageJSON=Table[
-Pause[pause];
-pageAPI=URLBuild[{"https://api.umate.me","api","circle","circle_post_list"},{"circle_slug"->circleSlug,"page"->i}];
-ImportJSONFromURL[pageAPI,header],
-{i,1,\[LeftCeiling]postNumber/postPerPage\[RightCeiling]}
-];
-Export["page"<>DateString[Today,{"Year","Month","Day"}]<>".json",pageJSON];
-pageDataset=FromJSONToDataset[pageJSON]
-];
-(*帖子信息*)
-postJSON=Flatten[pageJSON[[All,3,2,2,2]],1];
-postDataset=FromJSONToDataset[postJSON];
-(*按创建时间从新到旧排序*)
-postDataset=postDataset[ReverseSortBy[Slot["created_at"]&]];
-(*下载帖子内容*)
-result=Reap@
-Table[
-postSlug=postDataset[i,"post_slug"];
-date=DateString[TimeZoneConvert[DateObject[postDataset[i,"created_at"],TimeZone->0],8],{"Year","Month","Day"}];
-Check[
-Which[
-(*如果是图片帖*)
-postDataset[i,"media_type"]==0,
-(*图片链接列表*)
-imageURL=Normal[postDataset[i,"media",Select[Slot["resource_type"]==0&],"paths","large"]];
-(*依次下载*)
-Table[
-(*如果链接丢失*)
-If[MissingQ[imageURL[[j]]],
-(*那么生成空图片占位*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[j,10,2]<>"（占位）.jpg";
-Sow@File[Export[name,"","Text"]],
-(*否则正常下载*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[j,10,2]<>"."<>StringReplace[StringExtract[imageURL[[j]],"."->-1,"?"->1],"jpeg"->"jpg"];
-Sow@DownloadFileFromURL[imageURL[[j]],name,header]
-],
-{j,1,Length[imageURL]}
-];
-(*保存文字内容*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[Length[imageURL]+1,10,2]<>".txt";
-Sow@File[Export[name,Normal[postDataset[i,{"title","content"}]]]],
-(*如果是视频帖*)
-postDataset[i,"media_type"]==1,
-(*预览图片链接列表*)
-imageURL=Normal[postDataset[i,"media",Select[Slot["resource_type"]==0&],"paths","large"]];
-(*视频链接列表*)
-videoURL=Normal[postDataset[i,"media",Select[Slot["resource_type"]==1&],"paths","medium"]];
-(*依次下载*)
-Table[
-(*暂未发现有预览图片链接丢失的情况，以防万一*)
-If[MissingQ[imageURL[[j]]],
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 j-1,10,2]<>"（占位）.jpg";
-Sow@File[Export[name,"","Text"]],
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 j-1,10,2]<>"."<>StringReplace[StringExtract[imageURL[[j]],"."->-1,"?"->1],"jpeg"->"jpg"];
-Sow@DownloadFileFromURL[imageURL[[j]],name,header]
-];
-(*最高画质m3u8链接*)
-m3u8URL=StringCases[ImportStringFromURL[videoURL[[j]],header],m3u8:Except["\n"]..~~EndOfString:>StringTake[videoURL[[j]],StringPosition[videoURL[[j]],"/"][[-1,1]]]<>m3u8][[1]];
-(*对应的ts链接列表*)
-tsURL=StringCases[ImportStringFromURL[m3u8URL,header],ts:(Except["#"|"\n"]..~~".ts"):>StringTake[m3u8URL,StringPosition[m3u8URL,"/"][[-1,1]]]<>ts];
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 j,10,2]<>".mp4";
-(*也依次下载*)
-videoFile=Table[
-DownloadFileFromURL[tsURL[[k]],Directory[],header],
-{k,1,Length[tsURL]}
-];
-(*构建*)
-mylist=Export["mylist.txt",StringJoin["file '"<>#<>"'\n"&/@AbsoluteFileName/@videoFile]];
-(*使用FFmpeg拼接视频*)
-RunProcess[{"ffmpeg","-f","concat","-safe",0,"-i",mylist,"-c","copy",Directory[] <>"\\"<>name,"-y"}];
-(*删除临时文件*)
-DeleteFile[videoFile];
-DeleteFile[mylist];
-Sow@File[name],
-{j,1,Length[imageURL]}
-];
-(*保存文字内容*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 Length[imageURL]+1,10,2]<>".txt";
-Sow@File[Export[name,Normal[postDataset[i,{"title","content"}]]]],
-(*如果是文章帖*)
-postDataset[i,"media_type"]==2,
-(*保存文字内容*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - 01.txt";
-Sow@File[Export[name,Normal[postDataset[i,{"title","content"}]]]],
-(*其他*)
-True,
-Print["第"<>ToString[i]<>"个帖子类型不符。"]
-],
-(*如果有提示消息生成*)
-Print["第"<>ToString[i]<>"个帖子下载出错，请重试！"]
-],
-{i,n1,Min[n2,postNumber]}
-];
-Return[result]
-];
-(*仅下载第n个*)
-UmateDownload[url_String/;StringMatchQ[url,"https://umate.me/personInfo/"~~__],dir_String,"圈子",{n_Integer}/;n>=1]:=UmateDownload[url,dir,"圈子",{n,n}];
-(*下载前n个，默认10^8个*)
-UmateDownload[url_String/;StringMatchQ[url,"https://umate.me/personInfo/"~~__],dir_String,"圈子",n:(n_Integer/;n>=1):10^8]:=UmateDownload[url,dir,"圈子",{1,n}];
-(*下载某一作者最新的数个帖子*)
-(*下载从第n1个到第n2个*)
-UmateDownload[url_String/;StringMatchQ[url,"https://umate.me/personInfo/"~~__],dir_String,"动态",{n1_Integer,n2_Integer}/;1<=n1<=n2]:=Module[
-{pause,header,user,userAPI,userJSON,userDataset,postNumber,imageNumber,videoNumber,postPerPage,circleSlug,pageAPI,pageJSON,pageDataset,postJSON,postDataset,postSlug,date,name,imageURL,videoURL,m3u8URL,tsURL,videoFile,mylist,result},
-(*设置暂停时长*)
-pause=1;
-(*恢复代理设置原始值*)
-$DefaultProxyRules["UseProxy"]=Automatic;
-(*创建输出目录*)
-CreateDirectory[dir];
-(*设置工作目录*)
-SetDirectory[dir];
-(*请求头，其中Authorization必需*)
-header="-H \"Authorization: Bearer eyJ▮▮▮▮▮▮Ll8\"";
-header=StringCases[header,"\""~~Shortest[key__]~~": "~~Shortest[value__]~~"\"":>(key->value)];
-(*用户信息*)
-user=StringExtract[url,"/"->-1];
-userAPI=URLBuild[{"https://api.umate.me","api","user","center"},{"username"->user}];
-userJSON=ImportJSONFromURL[userAPI,header];
-userDataset=FromJSONToDataset[userJSON];
-(*数量信息*)
-{postNumber,imageNumber,videoNumber}=ToExpression[Normal[Values[userDataset["data","counter",{"post_count","trends_image_count","trends_video_count"}]]]];
-postPerPage=10;
-(*页面信息*)
-circleSlug=userDataset["data","data",1,"circle_slug"];
-(*如果文件存在，则导入文件*)
-If[FileNames["trend"~~Repeated[DigitCharacter,{8}]~~".json"]!={},
-pageJSON=Import[FileNames["trend"~~Repeated[DigitCharacter,{8}]~~".json"][[-1]]];
-pageDataset=FromJSONToDataset[pageJSON]
-];
-(*如果文件不存在或帖子总数不相等，则更新文件*)
-If[FileNames["trend"~~Repeated[DigitCharacter,{8}]~~".json"]=={}||pageDataset[1,"data","total"]=!=postNumber,
-pageJSON=Table[
-Pause[pause];
-pageAPI=URLBuild[{"https://api.umate.me","api","post","trends_list"},{"username"->user,"page"->i}];
-ImportJSONFromURL[pageAPI,header],
-{i,1,\[LeftCeiling]postNumber/postPerPage\[RightCeiling]}
-];
-Export["trend"<>DateString[Today,{"Year","Month","Day"}]<>".json",pageJSON];
-pageDataset=FromJSONToDataset[pageJSON]
-];
-(*帖子信息*)
-postJSON=Flatten[pageJSON[[All,3,2,2,2]],1];
-postDataset=FromJSONToDataset[postJSON];
-(*按创建时间从新到旧排序*)
-postDataset=postDataset[ReverseSortBy[Slot["created_at"]&]];
-(*下载帖子内容*)
-result=Reap@
-Table[
-postSlug=postDataset[i,"post_slug"];
-date=DateString[TimeZoneConvert[DateObject[postDataset[i,"created_at"],TimeZone->0],8],{"Year","Month","Day"}];
-Check[
-Which[
-(*如果是图片帖*)
-postDataset[i,"media_type"]==0,
-(*图片链接列表*)
-imageURL=Normal[postDataset[i,"media",Select[Slot["resource_type"]==0&],"paths","large"]];
-(*依次下载*)
-Table[
-(*如果链接丢失*)
-If[MissingQ[imageURL[[j]]],
-(*那么生成空图片占位*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[j,10,2]<>"（占位）.jpg";
-Sow@File[Export[name,"","Text"]],
-(*否则正常下载*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[j,10,2]<>"."<>StringReplace[StringExtract[imageURL[[j]],"."->-1,"?"->1],"jpeg"->"jpg"];
-Sow@DownloadFileFromURL[imageURL[[j]],name,header]
-],
-{j,1,Length[imageURL]}
-];
-(*保存文字内容*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[Length[imageURL]+1,10,2]<>".txt";
-Sow@File[Export[name,Normal[postDataset[i,{"title","content"}]]]],
-(*如果是视频帖*)
-postDataset[i,"media_type"]==1,
-(*预览图片链接列表*)
-imageURL=Normal[postDataset[i,"media",Select[Slot["resource_type"]==0&],"paths","large"]];
-(*视频链接列表*)
-videoURL=Normal[postDataset[i,"media",Select[Slot["resource_type"]==1&],"paths","medium"]];
-(*依次下载*)
-Table[
-(*暂未发现有预览图片链接丢失的情况，以防万一*)
-If[MissingQ[imageURL[[j]]],
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 j-1,10,2]<>"（占位）.jpg";
-Sow@File[Export[name,"","Text"]],
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 j-1,10,2]<>"."<>StringReplace[StringExtract[imageURL[[j]],"."->-1,"?"->1],"jpeg"->"jpg"];
-Sow@DownloadFileFromURL[imageURL[[j]],name,header]
-];
-(*最高画质m3u8链接*)
-m3u8URL=StringCases[ImportStringFromURL[videoURL[[j]],header],m3u8:Except["\n"]..~~EndOfString:>StringTake[videoURL[[j]],StringPosition[videoURL[[j]],"/"][[-1,1]]]<>m3u8][[1]];
-(*对应的ts链接列表*)
-tsURL=StringCases[ImportStringFromURL[m3u8URL,header],ts:(Except["#"|"\n"]..~~".ts"):>StringTake[m3u8URL,StringPosition[m3u8URL,"/"][[-1,1]]]<>ts];
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 j,10,2]<>".mp4";
-(*也依次下载*)
-videoFile=Table[
-DownloadFileFromURL[tsURL[[k]],Directory[],header],
-{k,1,Length[tsURL]}
-];
-(*构建*)
-mylist=Export["mylist.txt",StringJoin["file '"<>#<>"'\n"&/@AbsoluteFileName/@videoFile]];
-(*使用FFmpeg拼接视频*)
-RunProcess[{"ffmpeg","-f","concat","-safe",0,"-i",mylist,"-c","copy",Directory[] <>"\\"<>name,"-y"}];
-(*删除临时文件*)
-DeleteFile[videoFile];
-DeleteFile[mylist];
-Sow@File[name],
-{j,1,Length[imageURL]}
-];
-(*保存文字内容*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - "<>IntegerString[2 Length[imageURL]+1,10,2]<>".txt";
-Sow@File[Export[name,Normal[postDataset[i,{"title","content"}]]]],
-(*如果是文章帖*)
-postDataset[i,"media_type"]==2,
-(*保存文字内容*)
-name=IntegerString[postNumber+1-i,10,4]<>" - "<>date<>" - "<>postSlug<>" - 01.txt";
-Sow@File[Export[name,Normal[postDataset[i,{"title","content"}]]]],
-(*其他*)
-True,
-Print["第"<>ToString[i]<>"个帖子类型不符。"]
-],
-(*如果有提示消息生成*)
-Print["第"<>ToString[i]<>"个帖子下载出错，请重试！"]
-],
-{i,n1,Min[n2,postNumber]}
-];
-Return[result]
-];
-(*仅下载第n个*)
-UmateDownload[url_String/;StringMatchQ[url,"https://umate.me/personInfo/"~~__],dir_String,"动态",{n_Integer}/;n>=1]:=UmateDownload[url,dir,"动态",{n,n}];
-(*下载前n个，默认10^8个*)
-UmateDownload[url_String/;StringMatchQ[url,"https://umate.me/personInfo/"~~__],dir_String,"动态",n:(n_Integer/;n>=1):10^8]:=UmateDownload[url,dir,"动态",{1,n}];
+(*** Wolfram Notebook File ***)
+(* http://www.wolfram.com/nb *)
 
-UmateDownload["https://umate.me/personInfo/▮▮▮▮▮▮","D:\\▮▮▮▮▮▮","圈子",3]
-UmateDownload["https://umate.me/personInfo/▮▮▮▮▮▮","D:\\▮▮▮▮▮▮","动态",4]
+(* CreatedBy='Mathematica 14.0' *)
+
+(*CacheID: 234*)
+(* Internal cache information:
+NotebookFileLineBreakTest
+NotebookFileLineBreakTest
+NotebookDataPosition[       158,          7]
+NotebookDataLength[     46667,       1019]
+NotebookOptionsPosition[     45724,        993]
+NotebookOutlinePosition[     46136,       1010]
+CellTagsIndexPosition[     46093,       1007]
+WindowFrame->Normal*)
+
+(* Beginning of Notebook Content *)
+Notebook[{
+
+Cell[CellGroupData[{
+Cell["\:524d\:671f\:51c6\:5907", "Section",
+ CellChangeTimes->{{3.9262368620286083`*^9, 3.926236866106367*^9}, {
+  3.931855228569412*^9, 
+  3.931855229680687*^9}},ExpressionUUID->"c4926325-ccda-5646-976f-\
+754dfc42c522"],
+
+Cell[BoxData[
+ RowBox[{
+  RowBox[{"(*", "\:6e05\:9664\:5b9a\:4e49", "*)"}], "\[IndentingNewLine]", 
+  RowBox[{
+   RowBox[{
+    RowBox[{"Clear", "[", "\"\<Global`*\>\"", "]"}], ";"}], 
+   "\[IndentingNewLine]", 
+   RowBox[{"(*", "\:4e0b\:8f7d\:6240\:9700\:7684\:8d44\:6e90", "*)"}], 
+   "\[IndentingNewLine]", 
+   RowBox[{
+    RowBox[{"SetDirectory", "[", 
+     RowBox[{"NotebookDirectory", "[", "]"}], "]"}], ";"}], 
+   "\[IndentingNewLine]", 
+   RowBox[{
+    RowBox[{"resource", "=", 
+     RowBox[{"{", "\"\<CrawlerTools.wl\>\"", "}"}]}], ";"}], 
+   "\[IndentingNewLine]", 
+   RowBox[{
+    RowBox[{"Table", "[", 
+     RowBox[{
+      RowBox[{
+       RowBox[{"repository", "=", 
+        RowBox[{"Import", "[", 
+         RowBox[{
+          RowBox[{"\"\<https://github.com/Li3Zi3han2/\>\"", "<>", 
+           RowBox[{"StringExtract", "[", 
+            RowBox[{
+             RowBox[{"resource", "[", 
+              RowBox[{"[", "i", "]"}], "]"}], ",", 
+             RowBox[{"\"\<.\>\"", "->", "1"}]}], "]"}], "<>", 
+           "\"\</releases/latest\>\""}], ",", "\"\<XMLObject\>\""}], "]"}]}], 
+       ";", "\[IndentingNewLine]", 
+       RowBox[{"md5", "=", 
+        RowBox[{
+         RowBox[{"Cases", "[", 
+          RowBox[{"repository", ",", 
+           RowBox[{
+            RowBox[{
+             RowBox[{"XMLElement", "[", 
+              RowBox[{"\"\<p\>\"", ",", 
+               RowBox[{"{", "}"}], ",", 
+               RowBox[{"{", "md5_", "}"}]}], "]"}], "/;", 
+             RowBox[{"StringMatchQ", "[", 
+              RowBox[{"md5", ",", 
+               RowBox[{"\"\<MD5: \>\"", "~~", 
+                RowBox[{"HexadecimalCharacter", ".."}]}]}], "]"}]}], ":>", 
+            RowBox[{"StringExtract", "[", 
+             RowBox[{"md5", ",", 
+              RowBox[{"\"\<MD5: \>\"", "->", 
+               RowBox[{"-", "1"}]}]}], "]"}]}], ",", 
+           RowBox[{"+", "\[Infinity]"}]}], "]"}], "[", 
+         RowBox[{"[", "1", "]"}], "]"}]}], ";", "\[IndentingNewLine]", 
+       RowBox[{"If", "[", 
+        RowBox[{
+         RowBox[{"Quiet", "[", 
+          RowBox[{
+           RowBox[{"FileHash", "[", 
+            RowBox[{
+             RowBox[{"resource", "[", 
+              RowBox[{"[", "i", "]"}], "]"}], ",", "\"\<MD5\>\"", ",", 
+             "\"\<HexString\>\""}], "]"}], "=!=", "md5"}], "]"}], ",", 
+         RowBox[{"URLDownload", "[", 
+          RowBox[{
+           RowBox[{
+            RowBox[{"Cases", "[", 
+             RowBox[{"repository", ",", 
+              RowBox[{
+               RowBox[{
+                RowBox[{"XMLElement", "[", 
+                 RowBox[{"\"\<meta\>\"", ",", 
+                  RowBox[{"{", 
+                   RowBox[{
+                    RowBox[{
+                    "\"\<name\>\"", "\[Rule]", "\"\<apple-itunes-app\>\""}], 
+                    ",", 
+                    RowBox[{"\"\<content\>\"", "\[Rule]", "url_"}]}], "}"}], 
+                  ",", 
+                  RowBox[{"{", "}"}]}], "]"}], "/;", 
+                RowBox[{"StringMatchQ", "[", 
+                 RowBox[{"url", ",", 
+                  RowBox[{"\"\<app-id=\>\"", "~~", 
+                   RowBox[{"DigitCharacter", ".."}], "~~", 
+                   "\"\<, app-argument=\>\"", "~~", "__"}]}], "]"}]}], ":>", 
+               RowBox[{
+                RowBox[{"StringReplace", "[", 
+                 RowBox[{
+                  RowBox[{"StringExtract", "[", 
+                   RowBox[{"url", ",", 
+                    RowBox[{"\"\<app-argument=\>\"", "->", 
+                    RowBox[{"-", "1"}]}]}], "]"}], ",", 
+                  RowBox[{"\"\</tag/\>\"", "->", "\"\</download/\>\""}]}], 
+                 "]"}], "<>", "\"\</\>\"", "<>", 
+                RowBox[{"resource", "[", 
+                 RowBox[{"[", "i", "]"}], "]"}]}]}], ",", 
+              RowBox[{"+", "\[Infinity]"}]}], "]"}], "[", 
+            RowBox[{"[", "1", "]"}], "]"}], ",", 
+           RowBox[{"resource", "[", 
+            RowBox[{"[", "i", "]"}], "]"}]}], "]"}]}], "]"}], ";", 
+       "\[IndentingNewLine]", 
+       RowBox[{"Get", "[", 
+        RowBox[{
+         RowBox[{"resource", "[", 
+          RowBox[{"[", "i", "]"}], "]"}], ",", 
+         RowBox[{"CharacterEncoding", "->", "\"\<UTF-8\>\""}]}], "]"}]}], ",", 
+      RowBox[{"{", 
+       RowBox[{"i", ",", "1", ",", 
+        RowBox[{"Length", "[", "resource", "]"}]}], "}"}]}], "]"}], 
+    ";"}]}]}]], "Input",
+ CellChangeTimes->{{3.931846304839657*^9, 3.9318463125176287`*^9}, {
+   3.93184634929755*^9, 3.931846391027767*^9}, {3.9318464330754538`*^9, 
+   3.931846440047542*^9}, {3.931846864311786*^9, 3.931846903558399*^9}, {
+   3.931846963567194*^9, 3.931846989182136*^9}, {3.931847280344131*^9, 
+   3.931847327412908*^9}, {3.931847686396967*^9, 3.9318477222269993`*^9}, {
+   3.9318477628724613`*^9, 3.931847787699964*^9}, {3.931854271731457*^9, 
+   3.931854296388603*^9}, {3.931854327578861*^9, 3.931854455375112*^9}, 
+   3.9318545180431767`*^9, {3.931855010073702*^9, 3.931855010352888*^9}, 
+   3.931855055094202*^9, {3.931855154018984*^9, 3.931855164119299*^9}},
+ CellLabel->"In[1]:=",ExpressionUUID->"39683e7f-26f4-4d40-bfc6-f178d2d688ab"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["\:5b9a\:4e49\:51fd\:6570", "Section",
+ CellChangeTimes->{{3.9262368620286083`*^9, 3.926236866106367*^9}, {
+  3.931855242592684*^9, 
+  3.931855244574152*^9}},ExpressionUUID->"84bdc0ea-79dd-5543-8247-\
+dc05e7c52dd9"],
+
+Cell[BoxData[
+ RowBox[{
+  RowBox[{
+  "(*", "\:4e0b\:8f7d\:67d0\:4e00\:4f5c\:8005\:6700\:65b0\:7684\:6570\:4e2a\
+\:5e16\:5b50", "*)"}], "\n", 
+  RowBox[{
+  "(*", "\:4e0b\:8f7d\:4ece\:7b2cn1\:4e2a\:5230\:7b2cn2\:4e2a", "*)"}], "\n", 
+  RowBox[{
+   RowBox[{
+    RowBox[{
+     RowBox[{"UmateDownload", "[", 
+      RowBox[{
+       RowBox[{"url_String", "/;", 
+        RowBox[{"StringMatchQ", "[", 
+         RowBox[{"url", ",", 
+          RowBox[{"\"\<https://umate.me/personInfo/\>\"", "~~", "__"}]}], 
+         "]"}]}], ",", "dir_String", ",", "\"\<\:5708\:5b50\>\"", ",", 
+       RowBox[{
+        RowBox[{"{", 
+         RowBox[{"n1_Integer", ",", "n2_Integer"}], "}"}], "/;", 
+        RowBox[{"1", "<=", "n1", "<=", "n2"}]}]}], "]"}], ":=", 
+     RowBox[{"Module", "[", 
+      RowBox[{
+       RowBox[{"{", 
+        RowBox[{
+        "pause", ",", "header", ",", "user", ",", "userAPI", ",", "userJSON", 
+         ",", "userDataset", ",", "postNumber", ",", "imageNumber", ",", 
+         "videoNumber", ",", "postPerPage", ",", "circleSlug", ",", "pageAPI",
+          ",", "pageJSON", ",", "pageDataset", ",", "postJSON", ",", 
+         "postDataset", ",", "postSlug", ",", "date", ",", "name", ",", 
+         "name1", ",", "name2", ",", "imageURL", ",", "videoURL", ",", 
+         "m3u8URL", ",", "tsURL", ",", "videoFile", ",", "audioFile", ",", 
+         "mylist", ",", "result"}], "}"}], ",", "\[IndentingNewLine]", 
+       RowBox[{"(*", "\:8bbe\:7f6e\:6682\:505c\:65f6\:957f", "*)"}], 
+       "\[IndentingNewLine]", 
+       RowBox[{
+        RowBox[{"pause", "=", "1"}], ";", "\[IndentingNewLine]", 
+        RowBox[{
+        "(*", "\:6062\:590d\:4ee3\:7406\:8bbe\:7f6e\:539f\:59cb\:503c", 
+         "*)"}], "\[IndentingNewLine]", 
+        RowBox[{
+         RowBox[{"$DefaultProxyRules", "[", "\"\<UseProxy\>\"", "]"}], "=", 
+         "Automatic"}], ";", "\[IndentingNewLine]", 
+        RowBox[{"(*", "\:521b\:5efa\:8f93\:51fa\:76ee\:5f55", "*)"}], 
+        "\[IndentingNewLine]", 
+        RowBox[{"CreateDirectory", "[", "dir", "]"}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{"(*", "\:8bbe\:7f6e\:5de5\:4f5c\:76ee\:5f55", "*)"}], 
+        "\[IndentingNewLine]", 
+        RowBox[{"SetDirectory", "[", "dir", "]"}], ";", "\[IndentingNewLine]", 
+        RowBox[{"(*", 
+         RowBox[{
+         "\:8bf7\:6c42\:5934", "\:ff0c", 
+          "\:5176\:4e2dAuthorization\:5fc5\:9700"}], "*)"}], 
+        "\[IndentingNewLine]", 
+        RowBox[{
+        "header", "=", 
+         "\"\<-H \\\"Authorization: Bearer \[FilledRectangle]\
+\[FilledRectangle]\[FilledRectangle]\[FilledRectangle]\[FilledRectangle]\
+\[FilledRectangle]\\\"\>\""}], ";", "\[IndentingNewLine]", 
+        RowBox[{"header", "=", 
+         RowBox[{"StringCases", "[", 
+          RowBox[{"header", ",", 
+           RowBox[{
+            RowBox[{"\"\<\\\"\>\"", "~~", 
+             RowBox[{"Shortest", "[", "key__", "]"}], "~~", "\"\<: \>\"", "~~", 
+             RowBox[{"Shortest", "[", "value__", "]"}], "~~", 
+             "\"\<\\\"\>\""}], ":>", 
+            RowBox[{"(", 
+             RowBox[{"key", "->", "value"}], ")"}]}]}], "]"}]}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{"(*", "\:7528\:6237\:4fe1\:606f", "*)"}], 
+        "\[IndentingNewLine]", 
+        RowBox[{"user", "=", 
+         RowBox[{"StringExtract", "[", 
+          RowBox[{"url", ",", 
+           RowBox[{"\"\</\>\"", "->", 
+            RowBox[{"-", "1"}]}]}], "]"}]}], ";", "\[IndentingNewLine]", 
+        RowBox[{"userAPI", "=", 
+         RowBox[{"URLBuild", "[", 
+          RowBox[{
+           RowBox[{"{", 
+            RowBox[{
+            "\"\<https://api.umate.me\>\"", ",", "\"\<api\>\"", ",", 
+             "\"\<circle\>\"", ",", "\"\<user_circle_list\>\""}], "}"}], ",", 
+           RowBox[{"{", 
+            RowBox[{"\"\<username\>\"", "->", "user"}], "}"}]}], "]"}]}], ";",
+         "\[IndentingNewLine]", 
+        RowBox[{"userJSON", "=", 
+         RowBox[{"ImportJSONFromURL", "[", 
+          RowBox[{"userAPI", ",", "header"}], "]"}]}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{"userDataset", "=", 
+         RowBox[{"FromJSONToDataset", "[", "userJSON", "]"}]}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{"(*", 
+         RowBox[{
+         "\:6570\:91cf\:4fe1\:606f", "\:ff0c", 
+          "\:76ee\:524d\:53ea\:8003\:8651\:7b2c1\:4e2a\:5708\:5b50"}], "*)"}],
+         "\[IndentingNewLine]", 
+        RowBox[{
+         RowBox[{"{", 
+          RowBox[{"postNumber", ",", "imageNumber", ",", "videoNumber"}], 
+          "}"}], "=", 
+         RowBox[{"ToExpression", "[", 
+          RowBox[{"Normal", "[", 
+           RowBox[{"Values", "[", 
+            RowBox[{"userDataset", "[", 
+             RowBox[{"\"\<data\>\"", ",", "\"\<data\>\"", ",", "1", ",", 
+              RowBox[{"{", 
+               RowBox[{
+               "\"\<post_num\>\"", ",", "\"\<image_num\>\"", ",", 
+                "\"\<video_num\>\""}], "}"}]}], "]"}], "]"}], "]"}], "]"}]}], 
+        ";", "\[IndentingNewLine]", 
+        RowBox[{"postPerPage", "=", "6"}], ";", "\[IndentingNewLine]", 
+        RowBox[{"(*", "\:9875\:9762\:4fe1\:606f", "*)"}], 
+        "\[IndentingNewLine]", 
+        RowBox[{"circleSlug", "=", 
+         RowBox[{"userDataset", "[", 
+          RowBox[{
+          "\"\<data\>\"", ",", "\"\<data\>\"", ",", "1", ",", 
+           "\"\<circle_slug\>\""}], "]"}]}], ";", "\[IndentingNewLine]", 
+        RowBox[{"(*", 
+         RowBox[{
+         "\:5982\:679c\:6587\:4ef6\:5b58\:5728", "\:ff0c", 
+          "\:5219\:5bfc\:5165\:6587\:4ef6"}], "*)"}], "\[IndentingNewLine]", 
+        RowBox[{"If", "[", 
+         RowBox[{
+          RowBox[{
+           RowBox[{"FileNames", "[", 
+            RowBox[{"\"\<page\>\"", "~~", 
+             RowBox[{"Repeated", "[", 
+              RowBox[{"DigitCharacter", ",", 
+               RowBox[{"{", "8", "}"}]}], "]"}], "~~", "\"\<.json\>\""}], 
+            "]"}], "!=", 
+           RowBox[{"{", "}"}]}], ",", "\[IndentingNewLine]", 
+          RowBox[{
+           RowBox[{"pageJSON", "=", 
+            RowBox[{"Import", "[", 
+             RowBox[{
+              RowBox[{"FileNames", "[", 
+               RowBox[{"\"\<page\>\"", "~~", 
+                RowBox[{"Repeated", "[", 
+                 RowBox[{"DigitCharacter", ",", 
+                  RowBox[{"{", "8", "}"}]}], "]"}], "~~", "\"\<.json\>\""}], 
+               "]"}], "[", 
+              RowBox[{"[", 
+               RowBox[{"-", "1"}], "]"}], "]"}], "]"}]}], ";", 
+           "\[IndentingNewLine]", 
+           RowBox[{"pageDataset", "=", 
+            RowBox[{"FromJSONToDataset", "[", "pageJSON", "]"}]}]}]}], 
+         "\[IndentingNewLine]", "]"}], ";", "\[IndentingNewLine]", 
+        RowBox[{"(*", 
+         RowBox[{
+         "\:5982\:679c\:6587\:4ef6\:4e0d\:5b58\:5728\:6216\:5e16\:5b50\:603b\
+\:6570\:4e0d\:76f8\:7b49", "\:ff0c", "\:5219\:66f4\:65b0\:6587\:4ef6"}], 
+         "*)"}], "\[IndentingNewLine]", 
+        RowBox[{"If", "[", 
+         RowBox[{
+          RowBox[{
+           RowBox[{
+            RowBox[{"FileNames", "[", 
+             RowBox[{"\"\<page\>\"", "~~", 
+              RowBox[{"Repeated", "[", 
+               RowBox[{"DigitCharacter", ",", 
+                RowBox[{"{", "8", "}"}]}], "]"}], "~~", "\"\<.json\>\""}], 
+             "]"}], "==", 
+            RowBox[{"{", "}"}]}], "||", 
+           RowBox[{
+            RowBox[{"pageDataset", "[", 
+             RowBox[{"1", ",", "\"\<data\>\"", ",", "\"\<total\>\""}], "]"}], 
+            "=!=", "postNumber"}]}], ",", "\[IndentingNewLine]", 
+          RowBox[{
+           RowBox[{"pageJSON", "=", 
+            RowBox[{"Table", "[", "\[IndentingNewLine]", 
+             RowBox[{
+              RowBox[{
+               RowBox[{"Pause", "[", "pause", "]"}], ";", 
+               "\[IndentingNewLine]", 
+               RowBox[{"pageAPI", "=", 
+                RowBox[{"URLBuild", "[", 
+                 RowBox[{
+                  RowBox[{"{", 
+                   RowBox[{
+                   "\"\<https://api.umate.me\>\"", ",", "\"\<api\>\"", ",", 
+                    "\"\<circle\>\"", ",", "\"\<circle_post_list\>\""}], 
+                   "}"}], ",", 
+                  RowBox[{"{", 
+                   RowBox[{
+                    RowBox[{"\"\<circle_slug\>\"", "->", "circleSlug"}], ",", 
+                    RowBox[{"\"\<page\>\"", "->", "i"}]}], "}"}]}], "]"}]}], 
+               ";", "\[IndentingNewLine]", 
+               RowBox[{"ImportJSONFromURL", "[", 
+                RowBox[{"pageAPI", ",", "header"}], "]"}]}], ",", 
+              "\[IndentingNewLine]", 
+              RowBox[{"{", 
+               RowBox[{"i", ",", "1", ",", 
+                RowBox[{"\[LeftCeiling]", 
+                 RowBox[{"postNumber", "/", "postPerPage"}], 
+                 "\[RightCeiling]"}]}], "}"}]}], "\[IndentingNewLine]", 
+             "]"}]}], ";", "\[IndentingNewLine]", 
+           RowBox[{"Export", "[", 
+            RowBox[{
+             RowBox[{"\"\<page\>\"", "<>", 
+              RowBox[{"DateString", "[", 
+               RowBox[{"Today", ",", 
+                RowBox[{"{", 
+                 RowBox[{
+                 "\"\<Year\>\"", ",", "\"\<Month\>\"", ",", "\"\<Day\>\""}], 
+                 "}"}]}], "]"}], "<>", "\"\<.json\>\""}], ",", "pageJSON"}], 
+            "]"}], ";", "\[IndentingNewLine]", 
+           RowBox[{"pageDataset", "=", 
+            RowBox[{"FromJSONToDataset", "[", "pageJSON", "]"}]}]}]}], 
+         "\[IndentingNewLine]", "]"}], ";", "\[IndentingNewLine]", 
+        RowBox[{"(*", "\:5e16\:5b50\:4fe1\:606f", "*)"}], 
+        "\[IndentingNewLine]", 
+        RowBox[{"postJSON", "=", 
+         RowBox[{"Flatten", "[", 
+          RowBox[{
+           RowBox[{"pageJSON", "[", 
+            RowBox[{"[", 
+             RowBox[{"All", ",", "3", ",", "2", ",", "2", ",", "2"}], "]"}], 
+            "]"}], ",", "1"}], "]"}]}], ";", "\[IndentingNewLine]", 
+        RowBox[{"postDataset", "=", 
+         RowBox[{"FromJSONToDataset", "[", "postJSON", "]"}]}], ";", 
+        "\[IndentingNewLine]", 
+        RowBox[{
+        "(*", "\:6309\:521b\:5efa\:65f6\:95f4\:4ece\:65b0\:5230\:65e7\:6392\
+\:5e8f", "*)"}], "\[IndentingNewLine]", 
+        RowBox[{"postDataset", "=", 
+         RowBox[{"postDataset", "[", 
+          RowBox[{"ReverseSortBy", "[", 
+           RowBox[{
+            RowBox[{"Slot", "[", "\"\<created_at\>\"", "]"}], "&"}], "]"}], 
+          "]"}]}], ";", "\[IndentingNewLine]", 
+        RowBox[{"(*", "\:4e0b\:8f7d\:5e16\:5b50\:5185\:5bb9", "*)"}], 
+        "\[IndentingNewLine]", 
+        RowBox[{"result", "=", 
+         RowBox[{"Reap", "@", "\[IndentingNewLine]", 
+          RowBox[{"Table", "[", "\[IndentingNewLine]", 
+           RowBox[{
+            RowBox[{
+             RowBox[{"postSlug", "=", 
+              RowBox[{"postDataset", "[", 
+               RowBox[{"i", ",", "\"\<post_slug\>\""}], "]"}]}], ";", 
+             "\[IndentingNewLine]", 
+             RowBox[{"date", "=", 
+              RowBox[{"DateString", "[", 
+               RowBox[{
+                RowBox[{"TimeZoneConvert", "[", 
+                 RowBox[{
+                  RowBox[{"DateObject", "[", 
+                   RowBox[{
+                    RowBox[{"postDataset", "[", 
+                    RowBox[{"i", ",", "\"\<created_at\>\""}], "]"}], ",", 
+                    RowBox[{"TimeZone", "->", "0"}]}], "]"}], ",", "8"}], 
+                 "]"}], ",", 
+                RowBox[{"{", 
+                 RowBox[{
+                 "\"\<Year\>\"", ",", "\"\<Month\>\"", ",", "\"\<Day\>\""}], 
+                 "}"}]}], "]"}]}], ";", "\[IndentingNewLine]", 
+             RowBox[{"Check", "[", "\[IndentingNewLine]", 
+              RowBox[{
+               RowBox[{"Which", "[", "\[IndentingNewLine]", 
+                RowBox[{"(*", "\:5982\:679c\:662f\:56fe\:7247\:5e16", "*)"}], 
+                "\[IndentingNewLine]", 
+                RowBox[{
+                 RowBox[{
+                  RowBox[{"postDataset", "[", 
+                   RowBox[{"i", ",", "\"\<media_type\>\""}], "]"}], "==", 
+                  "0"}], ",", "\[IndentingNewLine]", 
+                 RowBox[{"(*", "\:56fe\:7247\:94fe\:63a5\:5217\:8868", "*)"}],
+                  "\[IndentingNewLine]", 
+                 RowBox[{
+                  RowBox[{"imageURL", "=", 
+                   RowBox[{"Normal", "[", 
+                    RowBox[{"postDataset", "[", 
+                    RowBox[{"i", ",", "\"\<media\>\"", ",", 
+                    RowBox[{"Select", "[", 
+                    RowBox[{
+                    RowBox[{
+                    RowBox[{"Slot", "[", "\"\<resource_type\>\"", "]"}], "==",
+                     "0"}], "&"}], "]"}], ",", "\"\<paths\>\"", ",", 
+                    "\"\<large\>\""}], "]"}], "]"}]}], ";", 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"(*", "\:4f9d\:6b21\:4e0b\:8f7d", "*)"}], 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"Table", "[", "\[IndentingNewLine]", 
+                   RowBox[{
+                   "(*", "\:5982\:679c\:94fe\:63a5\:4e22\:5931", "*)"}], 
+                   "\[IndentingNewLine]", 
+                   RowBox[{
+                    RowBox[{"If", "[", 
+                    RowBox[{
+                    RowBox[{"MissingQ", "[", 
+                    RowBox[{"imageURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], "]"}], ",", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{
+                    "(*", "\:90a3\:4e48\:751f\:6210\:7a7a\:56fe\:7247\:5360\
+\:4f4d", "*)"}], "\[IndentingNewLine]", 
+                    RowBox[{
+                    RowBox[{"name", "=", 
+                    RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{"j", ",", "10", ",", "2"}], "]"}], "<>", 
+                    "\"\<\:ff08\:5360\:4f4d\:ff09.jpg\>\""}]}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"Sow", "@", 
+                    RowBox[{"File", "[", 
+                    RowBox[{"Export", "[", 
+                    RowBox[{"name", ",", "\"\<\>\"", ",", "\"\<Text\>\""}], 
+                    "]"}], "]"}]}]}], ",", "\[IndentingNewLine]", 
+                    RowBox[{
+                    "(*", "\:5426\:5219\:6b63\:5e38\:4e0b\:8f7d", "*)"}], 
+                    "\[IndentingNewLine]", 
+                    RowBox[{
+                    RowBox[{"name", "=", 
+                    RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{"j", ",", "10", ",", "2"}], "]"}], "<>", 
+                    "\"\<.\>\"", "<>", 
+                    RowBox[{"StringReplace", "[", 
+                    RowBox[{
+                    RowBox[{"StringExtract", "[", 
+                    RowBox[{
+                    RowBox[{"imageURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", 
+                    RowBox[{"\"\<.\>\"", "->", 
+                    RowBox[{"-", "1"}]}], ",", 
+                    RowBox[{"\"\<?\>\"", "->", "1"}]}], "]"}], ",", 
+                    RowBox[{"\"\<jpeg\>\"", "->", "\"\<jpg\>\""}]}], 
+                    "]"}]}]}], ";", "\[IndentingNewLine]", 
+                    RowBox[{"Sow", "@", 
+                    RowBox[{"DownloadFileFromURL", "[", 
+                    RowBox[{
+                    RowBox[{"imageURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", "name", ",", 
+                    "header"}], "]"}]}]}]}], "\[IndentingNewLine]", "]"}], 
+                    ",", "\[IndentingNewLine]", 
+                    RowBox[{"{", 
+                    RowBox[{"j", ",", "1", ",", 
+                    RowBox[{"Length", "[", "imageURL", "]"}]}], "}"}]}], 
+                   "\[IndentingNewLine]", "]"}], ";", "\[IndentingNewLine]", 
+                  RowBox[{
+                  "(*", "\:4fdd\:5b58\:6587\:5b57\:5185\:5bb9", "*)"}], 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"name", "=", 
+                   RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{
+                    RowBox[{"Length", "[", "imageURL", "]"}], "+", "1"}], ",",
+                     "10", ",", "2"}], "]"}], "<>", "\"\<.txt\>\""}]}], ";", 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"Sow", "@", 
+                   RowBox[{"File", "[", 
+                    RowBox[{"Export", "[", 
+                    RowBox[{"name", ",", 
+                    RowBox[{"Normal", "[", 
+                    RowBox[{"postDataset", "[", 
+                    RowBox[{"i", ",", 
+                    RowBox[{"{", 
+                    RowBox[{"\"\<title\>\"", ",", "\"\<content\>\""}], 
+                    "}"}]}], "]"}], "]"}]}], "]"}], "]"}]}]}], ",", 
+                 "\[IndentingNewLine]", 
+                 RowBox[{"(*", "\:5982\:679c\:662f\:89c6\:9891\:5e16", "*)"}],
+                  "\[IndentingNewLine]", 
+                 RowBox[{
+                  RowBox[{"postDataset", "[", 
+                   RowBox[{"i", ",", "\"\<media_type\>\""}], "]"}], "==", 
+                  "1"}], ",", "\[IndentingNewLine]", 
+                 RowBox[{
+                 "(*", "\:9884\:89c8\:56fe\:7247\:94fe\:63a5\:5217\:8868", 
+                  "*)"}], "\[IndentingNewLine]", 
+                 RowBox[{
+                  RowBox[{"imageURL", "=", 
+                   RowBox[{"Normal", "[", 
+                    RowBox[{"postDataset", "[", 
+                    RowBox[{"i", ",", "\"\<media\>\"", ",", 
+                    RowBox[{"Select", "[", 
+                    RowBox[{
+                    RowBox[{
+                    RowBox[{"Slot", "[", "\"\<resource_type\>\"", "]"}], "==",
+                     "0"}], "&"}], "]"}], ",", "\"\<paths\>\"", ",", 
+                    "\"\<large\>\""}], "]"}], "]"}]}], ";", 
+                  "\[IndentingNewLine]", 
+                  RowBox[{
+                  "(*", "\:89c6\:9891\:94fe\:63a5\:5217\:8868", "*)"}], 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"videoURL", "=", 
+                   RowBox[{"Normal", "[", 
+                    RowBox[{"postDataset", "[", 
+                    RowBox[{"i", ",", "\"\<media\>\"", ",", 
+                    RowBox[{"Select", "[", 
+                    RowBox[{
+                    RowBox[{
+                    RowBox[{"Slot", "[", "\"\<resource_type\>\"", "]"}], "==",
+                     "1"}], "&"}], "]"}], ",", "\"\<paths\>\"", ",", 
+                    "\"\<medium\>\""}], "]"}], "]"}]}], ";", 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"(*", "\:4f9d\:6b21\:4e0b\:8f7d", "*)"}], 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"Table", "[", "\[IndentingNewLine]", 
+                   RowBox[{"(*", 
+                    RowBox[{
+                    "\:6682\:672a\:53d1\:73b0\:6709\:9884\:89c8\:56fe\:7247\
+\:94fe\:63a5\:4e22\:5931\:7684\:60c5\:51b5", "\:ff0c", 
+                    "\:4ee5\:9632\:4e07\:4e00"}], "*)"}], 
+                   "\[IndentingNewLine]", 
+                   RowBox[{
+                    RowBox[{
+                    RowBox[{"If", "[", 
+                    RowBox[{
+                    RowBox[{"MissingQ", "[", 
+                    RowBox[{"imageURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], "]"}], ",", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{
+                    RowBox[{"name", "=", 
+                    RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{
+                    RowBox[{"2", " ", "j"}], "-", "1"}], ",", "10", ",", 
+                    "2"}], "]"}], "<>", 
+                    "\"\<\:ff08\:5360\:4f4d\:ff09.jpg\>\""}]}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"Sow", "@", 
+                    RowBox[{"File", "[", 
+                    RowBox[{"Export", "[", 
+                    RowBox[{"name", ",", "\"\<\>\"", ",", "\"\<Text\>\""}], 
+                    "]"}], "]"}]}]}], ",", "\[IndentingNewLine]", 
+                    RowBox[{
+                    RowBox[{"name", "=", 
+                    RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{
+                    RowBox[{"2", " ", "j"}], "-", "1"}], ",", "10", ",", 
+                    "2"}], "]"}], "<>", "\"\<.\>\"", "<>", 
+                    RowBox[{"StringReplace", "[", 
+                    RowBox[{
+                    RowBox[{"StringExtract", "[", 
+                    RowBox[{
+                    RowBox[{"imageURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", 
+                    RowBox[{"\"\<.\>\"", "->", 
+                    RowBox[{"-", "1"}]}], ",", 
+                    RowBox[{"\"\<?\>\"", "->", "1"}]}], "]"}], ",", 
+                    RowBox[{"\"\<jpeg\>\"", "->", "\"\<jpg\>\""}]}], 
+                    "]"}]}]}], ";", "\[IndentingNewLine]", 
+                    RowBox[{"Sow", "@", 
+                    RowBox[{"DownloadFileFromURL", "[", 
+                    RowBox[{
+                    RowBox[{"imageURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", "name", ",", 
+                    "header"}], "]"}]}]}]}], "\[IndentingNewLine]", "]"}], 
+                    ";", "\[IndentingNewLine]", 
+                    RowBox[{
+                    "(*", "\:6700\:9ad8\:753b\:8d28m3u8\:94fe\:63a5", "*)"}], 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"m3u8URL", "=", 
+                    RowBox[{
+                    RowBox[{"StringCases", "[", 
+                    RowBox[{
+                    RowBox[{"ImportTextFromURL", "[", 
+                    RowBox[{
+                    RowBox[{"videoURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", "header"}], "]"}], 
+                    ",", 
+                    RowBox[{
+                    RowBox[{"m3u8", ":", 
+                    RowBox[{"(", 
+                    RowBox[{"StartOfLine", "~~", 
+                    RowBox[{"Except", "[", "\"\<#\>\"", "]"}], "~~", 
+                    RowBox[{"Shortest", "[", "__", "]"}], "~~", "EndOfLine"}],
+                     ")"}]}], ":>", 
+                    RowBox[{
+                    RowBox[{"StringTake", "[", 
+                    RowBox[{
+                    RowBox[{"videoURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", 
+                    RowBox[{
+                    RowBox[{"StringPosition", "[", 
+                    RowBox[{
+                    RowBox[{"videoURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", "\"\</\>\""}], "]"}],
+                     "[", 
+                    RowBox[{"[", 
+                    RowBox[{
+                    RowBox[{"-", "1"}], ",", "1"}], "]"}], "]"}]}], "]"}], "<>",
+                     "m3u8"}]}]}], "]"}], "[", 
+                    RowBox[{"[", "1", "]"}], "]"}]}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{
+                    "(*", "\:5bf9\:5e94\:7684ts\:94fe\:63a5\:5217\:8868", 
+                    "*)"}], "\[IndentingNewLine]", 
+                    RowBox[{"tsURL", "=", 
+                    RowBox[{"StringCases", "[", 
+                    RowBox[{
+                    RowBox[{"ImportTextFromURL", "[", 
+                    RowBox[{"m3u8URL", ",", "header"}], "]"}], ",", 
+                    RowBox[{
+                    RowBox[{"StartOfLine", "~~", "\"\<../../\>\"", "~~", 
+                    RowBox[{"ts", ":", 
+                    RowBox[{"(", 
+                    RowBox[{
+                    RowBox[{"Shortest", "[", "__", "]"}], "~~", "EndOfLine"}],
+                     ")"}]}]}], ":>", 
+                    RowBox[{
+                    RowBox[{"StringTake", "[", 
+                    RowBox[{"m3u8URL", ",", 
+                    RowBox[{
+                    RowBox[{"StringPosition", "[", 
+                    RowBox[{"m3u8URL", ",", "\"\</\>\""}], "]"}], "[", 
+                    RowBox[{"[", 
+                    RowBox[{
+                    RowBox[{"-", "3"}], ",", "1"}], "]"}], "]"}]}], "]"}], "<>",
+                     "ts"}]}]}], "]"}]}], ";", "\[IndentingNewLine]", 
+                    RowBox[{"name1", "=", 
+                    RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\<-\>\"", "<>", "date", "<>", 
+                    "\"\< - \>\"", "<>", "postSlug", "<>", "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"2", " ", "j"}], ",", "10", ",", "2"}], "]"}], 
+                    "<>", "\"\<v.mp4\>\""}]}], ";", "\[IndentingNewLine]", 
+                    RowBox[{"(*", "\:4e5f\:4f9d\:6b21\:4e0b\:8f7d", "*)"}], 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"videoFile", "=", 
+                    RowBox[{"Table", "[", "\[IndentingNewLine]", 
+                    RowBox[{
+                    RowBox[{"DownloadFileFromURL", "[", 
+                    RowBox[{
+                    RowBox[{"tsURL", "[", 
+                    RowBox[{"[", "k", "]"}], "]"}], ",", 
+                    RowBox[{"Directory", "[", "]"}], ",", "header"}], "]"}], 
+                    ",", "\[IndentingNewLine]", 
+                    RowBox[{"{", 
+                    RowBox[{"k", ",", "1", ",", 
+                    RowBox[{"Length", "[", "tsURL", "]"}]}], "}"}]}], 
+                    "\[IndentingNewLine]", "]"}]}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"FFmpegFileJoin", "[", 
+                    RowBox[{"videoFile", ",", "name1"}], "]"}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"(*", "\:97f3\:9891m3u8\:94fe\:63a5", "*)"}], 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"m3u8URL", "=", 
+                    RowBox[{
+                    RowBox[{"StringCases", "[", 
+                    RowBox[{
+                    RowBox[{"ImportTextFromURL", "[", 
+                    RowBox[{
+                    RowBox[{"videoURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", "header"}], "]"}], 
+                    ",", 
+                    RowBox[{
+                    RowBox[{
+                    "\"\<#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\\\"group_audio\\\",\
+NAME=\\\"original\\\",LANGUAGE=\\\"\>\"", "~~", 
+                    RowBox[{"Shortest", "[", "__", "]"}], "~~", 
+                    "\"\<\\\",DEFAULT=YES,AUTOSELECT=YES,URI=\\\"\>\"", "~~", 
+                    RowBox[{"Shortest", "[", "m3u8__", "]"}], "~~", 
+                    "\"\<\\\"\>\""}], ":>", 
+                    RowBox[{
+                    RowBox[{"StringTake", "[", 
+                    RowBox[{
+                    RowBox[{"videoURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", 
+                    RowBox[{
+                    RowBox[{"StringPosition", "[", 
+                    RowBox[{
+                    RowBox[{"videoURL", "[", 
+                    RowBox[{"[", "j", "]"}], "]"}], ",", "\"\</\>\""}], "]"}],
+                     "[", 
+                    RowBox[{"[", 
+                    RowBox[{
+                    RowBox[{"-", "1"}], ",", "1"}], "]"}], "]"}]}], "]"}], "<>",
+                     "m3u8"}]}]}], "]"}], "[", 
+                    RowBox[{"[", "1", "]"}], "]"}]}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{
+                    "(*", "\:5bf9\:5e94\:7684ts\:94fe\:63a5\:5217\:8868", 
+                    "*)"}], "\[IndentingNewLine]", 
+                    RowBox[{"tsURL", "=", 
+                    RowBox[{"StringCases", "[", 
+                    RowBox[{
+                    RowBox[{"ImportTextFromURL", "[", 
+                    RowBox[{"m3u8URL", ",", "header"}], "]"}], ",", 
+                    RowBox[{
+                    RowBox[{"StartOfLine", "~~", "\"\<../../\>\"", "~~", 
+                    RowBox[{"ts", ":", 
+                    RowBox[{"(", 
+                    RowBox[{
+                    RowBox[{"Shortest", "[", "__", "]"}], "~~", "EndOfLine"}],
+                     ")"}]}]}], ":>", 
+                    RowBox[{
+                    RowBox[{"StringTake", "[", 
+                    RowBox[{"m3u8URL", ",", 
+                    RowBox[{
+                    RowBox[{"StringPosition", "[", 
+                    RowBox[{"m3u8URL", ",", "\"\</\>\""}], "]"}], "[", 
+                    RowBox[{"[", 
+                    RowBox[{
+                    RowBox[{"-", "3"}], ",", "1"}], "]"}], "]"}]}], "]"}], "<>",
+                     "ts"}]}]}], "]"}]}], ";", "\[IndentingNewLine]", 
+                    RowBox[{"name2", "=", 
+                    RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"2", " ", "j"}], ",", "10", ",", "2"}], "]"}], 
+                    "<>", "\"\<a.m4a\>\""}]}], ";", "\[IndentingNewLine]", 
+                    RowBox[{"(*", "\:4e5f\:4f9d\:6b21\:4e0b\:8f7d", "*)"}], 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"audioFile", "=", 
+                    RowBox[{"Table", "[", "\[IndentingNewLine]", 
+                    RowBox[{
+                    RowBox[{"DownloadFileFromURL", "[", 
+                    RowBox[{
+                    RowBox[{"tsURL", "[", 
+                    RowBox[{"[", "k", "]"}], "]"}], ",", 
+                    RowBox[{"Directory", "[", "]"}], ",", "header"}], "]"}], 
+                    ",", "\[IndentingNewLine]", 
+                    RowBox[{"{", 
+                    RowBox[{"k", ",", "1", ",", 
+                    RowBox[{"Length", "[", "tsURL", "]"}]}], "}"}]}], 
+                    "\[IndentingNewLine]", "]"}]}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"FFmpegFileJoin", "[", 
+                    RowBox[{"audioFile", ",", "name2"}], "]"}], ";", 
+                    "\[IndentingNewLine]", 
+                    RowBox[{"FFmpegFileCombine", "[", 
+                    RowBox[{
+                    RowBox[{"{", 
+                    RowBox[{
+                    RowBox[{"File", "[", "name1", "]"}], ",", 
+                    RowBox[{"File", "[", "name2", "]"}]}], "}"}], ",", 
+                    RowBox[{"StringReplace", "[", 
+                    RowBox[{"name1", ",", 
+                    RowBox[{"\"\<v.mp4\>\"", "->", "\"\<.mp4\>\""}]}], 
+                    "]"}]}], "]"}]}], ",", "\[IndentingNewLine]", 
+                    RowBox[{"{", 
+                    RowBox[{"j", ",", "1", ",", 
+                    RowBox[{"Length", "[", "imageURL", "]"}]}], "}"}]}], 
+                   "\[IndentingNewLine]", "]"}], ";", "\[IndentingNewLine]", 
+                  RowBox[{
+                  "(*", "\:4fdd\:5b58\:6587\:5b57\:5185\:5bb9", "*)"}], 
+                  "\[IndentingNewLine]", 
+                  RowBox[{"name", "=", 
+                   RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - \>\"", "<>", 
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{
+                    RowBox[{"2", " ", 
+                    RowBox[{"Length", "[", "imageURL", "]"}]}], "+", "1"}], 
+                    ",", "10", ",", "2"}], "]"}], "<>", "\"\<.txt\>\""}]}], 
+                  ";", "\[IndentingNewLine]", 
+                  RowBox[{"Sow", "@", 
+                   RowBox[{"File", "[", 
+                    RowBox[{"Export", "[", 
+                    RowBox[{"name", ",", 
+                    RowBox[{"Normal", "[", 
+                    RowBox[{"postDataset", "[", 
+                    RowBox[{"i", ",", 
+                    RowBox[{"{", 
+                    RowBox[{"\"\<title\>\"", ",", "\"\<content\>\""}], 
+                    "}"}]}], "]"}], "]"}]}], "]"}], "]"}]}]}], ",", 
+                 "\[IndentingNewLine]", 
+                 RowBox[{"(*", "\:5982\:679c\:662f\:6587\:7ae0\:5e16", "*)"}],
+                  "\[IndentingNewLine]", 
+                 RowBox[{
+                  RowBox[{"postDataset", "[", 
+                   RowBox[{"i", ",", "\"\<media_type\>\""}], "]"}], "==", 
+                  "2"}], ",", "\[IndentingNewLine]", 
+                 RowBox[{"(*", "\:4fdd\:5b58\:6587\:5b57\:5185\:5bb9", "*)"}],
+                  "\[IndentingNewLine]", 
+                 RowBox[{
+                  RowBox[{"name", "=", 
+                   RowBox[{
+                    RowBox[{"IntegerString", "[", 
+                    RowBox[{
+                    RowBox[{"postNumber", "+", "1", "-", "i"}], ",", "10", 
+                    ",", "4"}], "]"}], "<>", "\"\< - \>\"", "<>", "date", 
+                    "<>", "\"\< - \>\"", "<>", "postSlug", "<>", 
+                    "\"\< - 01.txt\>\""}]}], ";", "\[IndentingNewLine]", 
+                  RowBox[{"Sow", "@", 
+                   RowBox[{"File", "[", 
+                    RowBox[{"Export", "[", 
+                    RowBox[{"name", ",", 
+                    RowBox[{"Normal", "[", 
+                    RowBox[{"postDataset", "[", 
+                    RowBox[{"i", ",", 
+                    RowBox[{"{", 
+                    RowBox[{"\"\<title\>\"", ",", "\"\<content\>\""}], 
+                    "}"}]}], "]"}], "]"}]}], "]"}], "]"}]}]}], ",", 
+                 "\[IndentingNewLine]", 
+                 RowBox[{"(*", "\:5176\:4ed6", "*)"}], "\[IndentingNewLine]", 
+                 "True", ",", "\[IndentingNewLine]", 
+                 RowBox[{"Print", "[", 
+                  RowBox[{"\"\<\:7b2c\>\"", "<>", 
+                   RowBox[{"ToString", "[", "i", "]"}], "<>", 
+                   "\"\<\:4e2a\:5e16\:5b50\:7c7b\:578b\:4e0d\:7b26\:3002\>\""}\
+], "]"}]}], "\[IndentingNewLine]", "]"}], ",", "\[IndentingNewLine]", 
+               RowBox[{
+               "(*", "\:5982\:679c\:6709\:63d0\:793a\:6d88\:606f\:751f\:6210",
+                 "*)"}], "\[IndentingNewLine]", 
+               RowBox[{"Print", "[", 
+                RowBox[{"\"\<\:7b2c\>\"", "<>", 
+                 RowBox[{"ToString", "[", "i", "]"}], "<>", 
+                 "\"\<\:4e2a\:5e16\:5b50\:4e0b\:8f7d\:51fa\:9519\:ff0c\:8bf7\
+\:91cd\:8bd5\:ff01\>\""}], "]"}]}], "\[IndentingNewLine]", "]"}]}], ",", 
+            "\[IndentingNewLine]", 
+            RowBox[{"{", 
+             RowBox[{"i", ",", "n1", ",", 
+              RowBox[{"Min", "[", 
+               RowBox[{"n2", ",", "postNumber"}], "]"}]}], "}"}]}], 
+           "\[IndentingNewLine]", "]"}]}]}], ";", "\[IndentingNewLine]", 
+        RowBox[{"Return", "[", 
+         RowBox[{"Flatten", "[", 
+          RowBox[{"result", "[", 
+           RowBox[{"[", 
+            RowBox[{"2", ",", "1"}], "]"}], "]"}], "]"}], "]"}]}]}], "\n", 
+      "]"}]}], ";"}], "\n", 
+   RowBox[{"(*", "\:4ec5\:4e0b\:8f7d\:7b2cn\:4e2a", "*)"}], "\n", 
+   RowBox[{
+    RowBox[{
+     RowBox[{"UmateDownload", "[", 
+      RowBox[{
+       RowBox[{"url_String", "/;", 
+        RowBox[{"StringMatchQ", "[", 
+         RowBox[{"url", ",", 
+          RowBox[{"\"\<https://umate.me/personInfo/\>\"", "~~", "__"}]}], 
+         "]"}]}], ",", "dir_String", ",", "\"\<\:5708\:5b50\>\"", ",", 
+       RowBox[{
+        RowBox[{"{", "n_Integer", "}"}], "/;", 
+        RowBox[{"n", ">=", "1"}]}]}], "]"}], ":=", 
+     RowBox[{"UmateDownload", "[", 
+      RowBox[{"url", ",", "dir", ",", "\"\<\:5708\:5b50\>\"", ",", 
+       RowBox[{"{", 
+        RowBox[{"n", ",", "n"}], "}"}]}], "]"}]}], ";"}], "\n", 
+   RowBox[{"(*", 
+    RowBox[{"\:4e0b\:8f7d\:524dn\:4e2a", "\:ff0c", 
+     RowBox[{
+      RowBox[{"\:9ed8\:8ba410", "^", "8"}], "\:4e2a"}]}], "*)"}], "\n", 
+   RowBox[{
+    RowBox[{
+     RowBox[{"UmateDownload", "[", 
+      RowBox[{
+       RowBox[{"url_String", "/;", 
+        RowBox[{"StringMatchQ", "[", 
+         RowBox[{"url", ",", 
+          RowBox[{"\"\<https://umate.me/personInfo/\>\"", "~~", "__"}]}], 
+         "]"}]}], ",", "dir_String", ",", "\"\<\:5708\:5b50\>\"", ",", 
+       RowBox[{"n", ":", 
+        RowBox[{"(", 
+         RowBox[{"n_Integer", "/;", 
+          RowBox[{"n", ">=", "1"}]}], ")"}], ":", 
+        RowBox[{"10", "^", "8"}]}]}], "]"}], ":=", 
+     RowBox[{"UmateDownload", "[", 
+      RowBox[{"url", ",", "dir", ",", "\"\<\:5708\:5b50\>\"", ",", 
+       RowBox[{"{", 
+        RowBox[{"1", ",", "n"}], "}"}]}], "]"}]}], ";"}]}]}]], "Input",
+ CellChangeTimes->{{3.931855309856981*^9, 3.931855607847223*^9}, {
+   3.931855956037607*^9, 3.931855956109644*^9}, {3.931856517424017*^9, 
+   3.931856539711273*^9}, 
+   3.931856621724884*^9},ExpressionUUID->"91c524cc-1cc9-fc4a-b4e2-\
+4bc3f4a1242b"]
+}, Open  ]],
+
+Cell[CellGroupData[{
+
+Cell["\:8303\:4f8b", "Section",
+ CellChangeTimes->{{3.9262368620286083`*^9, 3.926236866106367*^9}, {
+  3.926236923960846*^9, 
+  3.926236928890285*^9}},ExpressionUUID->"9daf4919-c4de-4248-90c9-\
+fd284fe753c4"],
+
+Cell[BoxData[
+ RowBox[{"UmateDownload", "[", 
+  RowBox[{
+  "\"\<https://umate.me/personInfo/\[FilledRectangle]\[FilledRectangle]\
+\[FilledRectangle]\[FilledRectangle]\[FilledRectangle]\[FilledRectangle]\>\"",
+    ",", "\"\<D:\\\\\[FilledRectangle]\[FilledRectangle]\[FilledRectangle]\
+\[FilledRectangle]\[FilledRectangle]\[FilledRectangle]\>\"", ",", 
+   "\"\<\:5708\:5b50\>\"", ",", "1"}], "]"}]], "Input",
+ CellChangeTimes->{{3.93185567267642*^9, 3.931855674608022*^9}, 
+   3.9318565465488567`*^9},ExpressionUUID->"3c5c1717-8c30-2549-801e-\
+a658be054e94"]
+}, Open  ]]
+},
+WindowSize->{1269, 721},
+WindowMargins->{{0, Automatic}, {Automatic, 0}},
+FrontEndVersion->"14.0 for Microsoft Windows (64-bit) (2023\:5e7412\:670812\
+\:65e5)",
+StyleDefinitions->"Default.nb",
+ExpressionUUID->"e3532c0e-be6f-9c40-9402-457b21de516b"
+]
+(* End of Notebook Content *)
+
+(* Internal cache information *)
+(*CellTagsOutline
+CellTagsIndex->{}
+*)
+(*CellTagsIndex
+CellTagsIndex->{}
+*)
+(*NotebookFileOutline
+Notebook[{
+Cell[CellGroupData[{
+Cell[580, 22, 220, 4, 67, "Section",ExpressionUUID->"c4926325-ccda-5646-976f-754dfc42c522"],
+Cell[803, 28, 5088, 117, 418, "Input",ExpressionUUID->"39683e7f-26f4-4d40-bfc6-f178d2d688ab"]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[5928, 150, 220, 4, 67, "Section",ExpressionUUID->"84bdc0ea-79dd-5543-8247-dc05e7c52dd9"],
+Cell[6151, 156, 38752, 813, 4025, "Input",ExpressionUUID->"91c524cc-1cc9-fc4a-b4e2-4bc3f4a1242b"]
+}, Open  ]],
+Cell[CellGroupData[{
+Cell[44940, 974, 208, 4, 67, "Section",ExpressionUUID->"9daf4919-c4de-4248-90c9-fd284fe753c4"],
+Cell[45151, 980, 557, 10, 28, "Input",ExpressionUUID->"3c5c1717-8c30-2549-801e-a658be054e94"]
+}, Open  ]]
+}
+]
+*)
+
